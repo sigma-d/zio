@@ -43,6 +43,7 @@ __version__ = "1.0.0"
 __project__ = "https://github.com/zTrix/zio"
 
 import struct, socket, os, sys, subprocess, threading, pty, time, re, select, termios, resource, tty, errno, signal, fcntl, gc, platform
+import getpass, stat
 try:
     from cStringIO import StringIO
 except ImportError:
@@ -824,7 +825,7 @@ class zio(object):
     def write(self, s):
         if not s: return 0
         if self.mode() == SOCKET:
-            if self.print_write: stdout(self.print_write(s))
+            if self.print_write: stdout(self.print_write(s),'yellow')
             self.sock.sendall(s)
             return len(s)
         elif self.mode() == PROCESS:
@@ -839,7 +840,7 @@ class zio(object):
             # 1. input/output will not be cleaner, I mean, they are always in a mess
             # 2. this is a unified interface for pipe/tty write
             # 3. echo back characters will translate control chars into ^@ ^A ^B ^C, ah, ugly!
-            if self.print_write: stdout(self.print_write(s))
+            if self.print_write: stdout(self.print_write(s),'yellow')
 
             return ret
 
@@ -1185,7 +1186,7 @@ class zio(object):
                 try:
                     if self.wfd in r:
                         data = os.read(self.wfd, 1024)
-                        if self.print_read and data: stdout(self.print_read(data))
+                        if self.print_read and data: stdout(self.print_read(data),'blue')
                 except OSError, err:
                     # wfd read EOF (echo back)
                     pass
@@ -1193,7 +1194,7 @@ class zio(object):
             if self.rfd in r:
                 try:
                     s = self._read(size)
-                    if self.print_read and s: stdout(self.print_read(s))
+                    if self.print_read and s: stdout(self.print_read(s),'blue')
                 except OSError:
                     # Linux does this
                     self.flag_eof = True
@@ -1228,6 +1229,57 @@ class zio(object):
                 hints.append(str(e))
         gdb = colored('zio.py -l 0.5 -b "For help" -a "`printf \'' + '\\r\\n'.join(hints) + '\\r\\n\'`" gdb', 'magenta') + '\nuse cmdline above to attach gdb then press enter to continue ... '
         raw_input(gdb)
+
+    def gdb_attachpid(self, pid, breakpoints = None, relative = None, extras = None):
+        assert pid > 0
+        hints = ['attach %d' % pid ]
+        base = 0
+        if relative:
+            vmmap = open('/proc/%d/maps' % self.pid).read()
+            for line in vmmap.splitlines():
+                if line.lower().find(relative.lower()) > -1:
+                    base = int(line.split('-')[0], 16)
+                    break
+        if breakpoints:
+            for b in breakpoints:
+                hints.append('b *' + hex(base + b))
+        if extras:
+            for e in extras:
+                hints.append(str(e))
+        gdb = 'python /usr/lib/python2.7/zio.py -l 0.5 -b bugs -a '+chr(0x22)+'`printf \'' + '\\n'.join(hints) + '\\nc\\nc\'`'+chr(0x22)+' gdb '
+        try:
+            os.chmod('/tmp/'+getpass.getuser()+'_command.sh',stat.S_IRWXU)
+        except Exception:
+            pass
+        open('/tmp/'+getpass.getuser()+'_command.sh','w').write(gdb)
+        os.chmod('/tmp/'+getpass.getuser()+'_command.sh',stat.S_IRWXU)
+        os.system('(setsid /usr/bin/gnome-terminal -e /tmp/'+getpass.getuser()+'_command.sh &)')
+        print colored('gdb attaching pid %d ... '%pid,'red')
+        time.sleep(3)
+        print colored('should be attached','red')
+        return
+
+
+    def getnewestforkpidbylistenport(self,port):
+        filename=os.popen("lsof -i:%d  |grep LISTEN|awk -F ' ' '{print $1}'"%int(port)).read().strip()
+        pids=os.popen('pgrep '+filename).read().split("\n")
+        pids.remove('')
+        if len(pids)>1:
+            pid=os.popen('pgrep '+filename+' -n').read().split("\n")
+            pid.remove('')
+            print colored('Find '+filename+' '+str(pids)+' on port %d,'%port,'magenta'),
+            return int(pid[0])
+
+
+    def gdb_auto(self, breakpoints = None, relative = None, extras = None):
+        if self.mode() == PROCESS:
+            return self.gdb_attachpid(self.pid,breakpoints,relative,extras)
+        if self.mode() == SOCKET:
+            if self.target[0][:4]=='127.':
+                pid=self.getnewestforkpidbylistenport(self.target[1])
+                return self.gdb_attachpid(pid,breakpoints,relative,extras)
+            else:
+                print colored('Remote socket, skip gdb_my()','red')
 
     def _not_impl(self):
         raise NotImplementedError("Not Implemented")
